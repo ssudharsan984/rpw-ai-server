@@ -66,106 +66,35 @@ def home():
 # -----------------------------
 # Predict
 # -----------------------------
+# ---------------------------------
+# Prediction API (Temporary Test)
+# ---------------------------------
+
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
 
-    try:
+    print("TEST: Predict endpoint reached")
 
-        print("STEP 1 : File received")
+    filename = f"{uuid.uuid4()}.jpg"
 
-        filename = f"{uuid.uuid4()}.jpg"
+    image_path = os.path.join(
+        UPLOAD_FOLDER,
+        filename
+    )
 
-        image_path = os.path.join(
-            UPLOAD_FOLDER,
-            filename
+    with open(image_path, "wb") as buffer:
+        shutil.copyfileobj(
+            file.file,
+            buffer
         )
 
-        with open(image_path, "wb") as buffer:
-            shutil.copyfileobj(
-                file.file,
-                buffer
-            )
+    print("Image saved successfully")
 
-        print("STEP 2 : Image saved")
-
-        image = cv2.imread(image_path)
-
-        if image is None:
-            raise Exception("Unable to read uploaded image")
-
-        print("STEP 3 : Starting YOLO")
-
-        results = model(
-            image,
-            conf=0.25,
-            imgsz=320,
-            verbose=False
-        )
-
-        print("STEP 4 : YOLO completed")
-
-        detected = False
-
-        for result in results:
-
-            if len(result.boxes) > 0:
-                detected = True
-
-            annotated = result.plot()
-
-            cv2.imwrite(
-                image_path,
-                annotated
-            )
-
-        status = "RPW Detected" if detected else "No RPW"
-
-        image_url = (
-            "https://rpw-ai.onrender.com/uploads/"
-            + filename
-        )
-
-        print("STEP 5 : Saving Firestore")
-
-        if db is not None:
-
-            db.collection("detections").add({
-
-                "filename": filename,
-
-                "status": status,
-
-                "imageUrl": image_url,
-
-                "timestamp": firestore.SERVER_TIMESTAMP
-
-            })
-
-            print("Firestore saved")
-
-        print("STEP 6 : Sending Response")
-
-        return {
-
-            "success": True,
-
-            "status": status,
-
-            "imageUrl": image_url
-
-        }
-
-    except Exception as e:
-
-        print("ERROR:", repr(e))
-
-        return {
-
-            "success": False,
-
-            "error": str(e)
-
-        }
+    return {
+        "success": True,
+        "message": "Upload successful",
+        "filename": filename
+    }
 
 # -----------------------------
 # Local Run
