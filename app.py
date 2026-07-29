@@ -7,6 +7,7 @@ import shutil
 import os
 import uuid
 import cv2
+import traceback
 
 # -----------------------------
 # FastAPI
@@ -29,7 +30,8 @@ try:
     print("Firebase connected successfully!")
 
 except Exception as e:
-    print("Firebase initialization failed:", e)
+    print("Firebase initialization failed:")
+    print(e)
 
 # -----------------------------
 # Load YOLO Model
@@ -66,35 +68,82 @@ def home():
 # -----------------------------
 # Predict
 # -----------------------------
-# ---------------------------------
-# Prediction API (Temporary Test)
-# ---------------------------------
-
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
+    try:
 
-    print("TEST: Predict endpoint reached")
+        print("STEP 1: File received")
 
-    filename = f"{uuid.uuid4()}.jpg"
+        filename = f"{uuid.uuid4()}.jpg"
+        image_path = os.path.join(UPLOAD_FOLDER, filename)
 
-    image_path = os.path.join(
-        UPLOAD_FOLDER,
-        filename
-    )
+        with open(image_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
 
-    with open(image_path, "wb") as buffer:
-        shutil.copyfileobj(
-            file.file,
-            buffer
+        print(f"STEP 2: Image saved -> {image_path}")
+
+        print("STEP 3: Starting YOLO inference")
+
+        results = model.predict(
+            source=image_path,
+            conf=0.25,
+            imgsz=640,
+            save=False,
+            verbose=True
         )
 
-    print("Image saved successfully")
+        print("STEP 4: YOLO inference completed")
 
-    return {
-        "success": True,
-        "message": "Upload successful",
-        "filename": filename
-    }
+        detected = False
+
+        for result in results:
+
+            print("Detected boxes:", len(result.boxes))
+
+            if len(result.boxes) > 0:
+                detected = True
+
+            annotated = result.plot()
+
+            cv2.imwrite(image_path, annotated)
+
+        status = "RPW Detected" if detected else "No RPW"
+
+        print("STEP 5: Status =", status)
+
+        image_url = (
+            "https://rpw-ai.onrender.com/uploads/" + filename
+        )
+
+        if db:
+
+            db.collection("detections").add({
+                "filename": filename,
+                "status": status,
+                "imageUrl": image_url,
+                "timestamp": firestore.SERVER_TIMESTAMP
+            })
+
+            print("STEP 6: Firestore saved")
+
+        print("STEP 7: Returning response")
+
+        return {
+            "success": True,
+            "status": status,
+            "imageUrl": image_url
+        }
+
+    except Exception:
+
+        print("========== ERROR ==========")
+        print(traceback.format_exc())
+        print("===========================")
+
+        return {
+            "success": False,
+            "error": traceback.format_exc()
+        }
 
 # -----------------------------
 # Local Run
