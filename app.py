@@ -86,8 +86,8 @@ async def predict(file: UploadFile = File(...)):
     status = "RPW Detected" if detected else "No RPW"
 
     # Your Render URL
-    image_url = f"https://rpw-ai-server-1.onrender.com/uploads/{filename}"
-
+    image_url = f"https://ssudharsan-rpw-ai.onrender.com/uploads/{filename}"
+    
     # Save to Firestore
     firestore_data = {
         "filename": filename,
