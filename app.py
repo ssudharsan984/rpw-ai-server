@@ -1,9 +1,11 @@
 from fastapi import FastAPI, UploadFile, File
+from fastapi.staticfiles import StaticFiles
 from ultralytics import YOLO
 import firebase_admin
 from firebase_admin import credentials, firestore
 import shutil
 import os
+import uuid
 
 # -----------------------------
 # Initialize FastAPI
@@ -13,7 +15,12 @@ app = FastAPI(title="RPW AI Detection API")
 # -----------------------------
 # Initialize Firebase
 # -----------------------------
+# Local:
 cred = credentials.Certificate("serviceAccountKey.json")
+
+# Render:
+# cred = credentials.Certificate("/etc/secrets/serviceAccountKey.json")
+
 firebase_admin.initialize_app(cred)
 
 db = firestore.client()
@@ -23,13 +30,16 @@ db = firestore.client()
 # -----------------------------
 print("Loading YOLO model...")
 model = YOLO("best.pt")
-print("Model loaded successfully!")
+print("YOLO model loaded successfully!")
 
 # -----------------------------
-# Create Upload Folder
+# Upload Folder
 # -----------------------------
 UPLOAD_FOLDER = "uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+# Allow images to be accessed from browser
+app.mount("/uploads", StaticFiles(directory=UPLOAD_FOLDER), name="uploads")
 
 # -----------------------------
 # Home API
@@ -46,9 +56,11 @@ def home():
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
 
-    # Save uploaded image
-    image_path = os.path.join(UPLOAD_FOLDER, file.filename)
+    # Generate unique filename
+    filename = f"{uuid.uuid4()}.jpg"
+    image_path = os.path.join(UPLOAD_FOLDER, filename)
 
+    # Save uploaded image
     with open(image_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
@@ -56,31 +68,31 @@ async def predict(file: UploadFile = File(...)):
     results = model.predict(
         source=image_path,
         conf=0.25,
-        save=True
+        save=False
     )
 
-    detections = []
+    detected = False
 
     for result in results:
-        for box in result.boxes:
+        if len(result.boxes) > 0:
+            detected = True
 
-            detections.append({
-                "class": int(box.cls[0]),
-                "confidence": float(box.conf[0]),
-                "xmin": float(box.xyxy[0][0]),
-                "ymin": float(box.xyxy[0][1]),
-                "xmax": float(box.xyxy[0][2]),
-                "ymax": float(box.xyxy[0][3])
-            })
+        # Save image with bounding boxes
+        annotated = result.plot()
 
-    status = "RPW Detected" if len(detections) > 0 else "No RPW"
+        import cv2
+        cv2.imwrite(image_path, annotated)
+
+    status = "RPW Detected" if detected else "No RPW"
+
+    # Your Render URL
+    image_url = f"https://rpw-ai-server-1.onrender.com/uploads/{filename}"
 
     # Save to Firestore
     firestore_data = {
-        "filename": file.filename,
+        "filename": filename,
         "status": status,
-        "count": len(detections),
-        "detections": detections,
+        "imageUrl": image_url,
         "timestamp": firestore.SERVER_TIMESTAMP
     }
 
@@ -88,8 +100,6 @@ async def predict(file: UploadFile = File(...)):
 
     return {
         "success": True,
-        "filename": file.filename,
         "status": status,
-        "count": len(detections),
-        "detections": detections
+        "imageUrl": image_url
     }
