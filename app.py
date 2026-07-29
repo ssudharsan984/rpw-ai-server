@@ -12,6 +12,7 @@ import cv2
 # ---------------------------------
 # Initialize FastAPI
 # ---------------------------------
+
 app = FastAPI(
     title="RPW AI Detection API",
     description="Red Palm Weevil Detection System",
@@ -22,7 +23,9 @@ app = FastAPI(
 # ---------------------------------
 # Initialize Firebase
 # ---------------------------------
+
 try:
+
     cred = credentials.Certificate(
         "/etc/secrets/serviceAccountKey.json"
     )
@@ -33,9 +36,12 @@ try:
 
     print("Firebase connected successfully!")
 
+
 except Exception as e:
+
     print("Firebase initialization error:")
     print(e)
+
     db = None
 
 
@@ -43,6 +49,7 @@ except Exception as e:
 # ---------------------------------
 # Load YOLO Model
 # ---------------------------------
+
 print("Loading YOLO model...")
 
 model = YOLO("best.pt")
@@ -54,6 +61,7 @@ print("YOLO model loaded successfully!")
 # ---------------------------------
 # Upload Folder
 # ---------------------------------
+
 UPLOAD_FOLDER = "uploads"
 
 os.makedirs(
@@ -73,6 +81,7 @@ app.mount(
 # ---------------------------------
 # Home Route
 # ---------------------------------
+
 @app.get("/")
 def home():
 
@@ -86,6 +95,7 @@ def home():
 # ---------------------------------
 # Prediction API
 # ---------------------------------
+
 @app.post("/predict")
 async def predict(
     file: UploadFile = File(...)
@@ -93,8 +103,13 @@ async def predict(
 
     try:
 
-        # Create unique filename
+        print("STEP 1: File received")
+
+
+        # Create image filename
+
         filename = f"{uuid.uuid4()}.jpg"
+
 
         image_path = os.path.join(
             UPLOAD_FOLDER,
@@ -102,7 +117,8 @@ async def predict(
         )
 
 
-        # Save uploaded image
+        # Save image
+
         with open(image_path, "wb") as buffer:
 
             shutil.copyfileobj(
@@ -111,36 +127,59 @@ async def predict(
             )
 
 
-        print("Image saved:", image_path)
+        print(
+            "STEP 2: Image saved:",
+            image_path
+        )
 
 
 
-        # YOLO Detection
+        # ---------------------------------
+        # YOLO Prediction
+        # ---------------------------------
+
+        print("STEP 3: Starting YOLO")
+
+
         results = model.predict(
             source=image_path,
             conf=0.25,
+            imgsz=640,
             save=False
         )
+
+
+        print("STEP 4: YOLO completed")
+
 
 
         detected = False
 
 
+
         for result in results:
 
-            # Check detection
+
+            print(
+                "Detected boxes:",
+                len(result.boxes)
+            )
+
+
             if len(result.boxes) > 0:
 
                 detected = True
 
 
-            # Draw bounding box
-            annotated = result.plot()
+
+            # Draw bounding boxes
+
+            annotated_image = result.plot()
 
 
             cv2.imwrite(
                 image_path,
-                annotated
+                annotated_image
             )
 
 
@@ -155,7 +194,17 @@ async def predict(
 
 
 
-        # Correct Render URL
+        print(
+            "Detection Status:",
+            status
+        )
+
+
+
+        # ---------------------------------
+        # Image URL
+        # ---------------------------------
+
         image_url = (
             "https://rpw-ai.onrender.com/uploads/"
             + filename
@@ -163,38 +212,54 @@ async def predict(
 
 
 
-        # Save to Firebase Firestore
+        # ---------------------------------
+        # Save Firestore
+        # ---------------------------------
+
+        print("STEP 5: Saving Firebase")
+
+
         if db:
-
-            firestore_data = {
-
-                "filename": filename,
-
-                "status": status,
-
-                "imageUrl": image_url,
-
-                "timestamp": firestore.SERVER_TIMESTAMP
-
-            }
 
 
             db.collection(
                 "detections"
-            ).add(firestore_data)
+            ).add(
+                {
+
+                    "filename": filename,
+
+                    "status": status,
+
+                    "imageUrl": image_url,
+
+                    "timestamp": firestore.SERVER_TIMESTAMP
+
+                }
+            )
 
 
-            print("Firestore data saved")
+            print(
+                "Firestore saved successfully"
+            )
+
+
+
+        print(
+            "STEP 6: Sending response"
+        )
 
 
 
         return {
+
 
             "success": True,
 
             "status": status,
 
             "imageUrl": image_url
+
 
         }
 
@@ -203,11 +268,19 @@ async def predict(
     except Exception as e:
 
 
+        print(
+            "ERROR OCCURRED:",
+            repr(e)
+        )
+
+
         return {
+
 
             "success": False,
 
-            "error": str(e)
+            "error": repr(e)
+
 
         }
 
@@ -216,12 +289,19 @@ async def predict(
 # ---------------------------------
 # Run Local
 # ---------------------------------
+
 if __name__ == "__main__":
+
 
     import uvicorn
 
+
     uvicorn.run(
+
         app,
+
         host="0.0.0.0",
+
         port=10000
+
     )
