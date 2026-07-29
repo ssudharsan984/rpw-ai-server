@@ -8,67 +8,44 @@ import os
 import uuid
 import cv2
 
-
-# ---------------------------------
-# Initialize FastAPI
-# ---------------------------------
-
+# -----------------------------
+# FastAPI
+# -----------------------------
 app = FastAPI(
     title="RPW AI Detection API",
     description="Red Palm Weevil Detection System",
     version="1.0"
 )
 
-
-# ---------------------------------
-# Initialize Firebase
-# ---------------------------------
+# -----------------------------
+# Firebase
+# -----------------------------
+db = None
 
 try:
-
-    cred = credentials.Certificate(
-        "/etc/secrets/serviceAccountKey.json"
-    )
-
+    cred = credentials.Certificate("/etc/secrets/serviceAccountKey.json")
     firebase_admin.initialize_app(cred)
-
     db = firestore.client()
-
     print("Firebase connected successfully!")
 
-
 except Exception as e:
+    print("Firebase initialization failed:", e)
 
-    print("Firebase initialization error:")
-    print(e)
-
-    db = None
-
-
-
-# ---------------------------------
+# -----------------------------
 # Load YOLO Model
-# ---------------------------------
-
+# -----------------------------
 print("Loading YOLO model...")
 
 model = YOLO("best.pt")
 
 print("YOLO model loaded successfully!")
 
-
-
-# ---------------------------------
+# -----------------------------
 # Upload Folder
-# ---------------------------------
-
+# -----------------------------
 UPLOAD_FOLDER = "uploads"
 
-os.makedirs(
-    UPLOAD_FOLDER,
-    exist_ok=True
-)
-
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 app.mount(
     "/uploads",
@@ -76,183 +53,99 @@ app.mount(
     name="uploads"
 )
 
-
-
-# ---------------------------------
-# Home Route
-# ---------------------------------
-
+# -----------------------------
+# Home
+# -----------------------------
 @app.get("/")
 def home():
-
     return {
         "message": "RPW AI Server Running Successfully",
         "status": "online"
     }
 
-
-
-# ---------------------------------
-# Prediction API
-# ---------------------------------
-
+# -----------------------------
+# Predict
+# -----------------------------
 @app.post("/predict")
-async def predict(
-    file: UploadFile = File(...)
-):
+async def predict(file: UploadFile = File(...)):
 
     try:
 
-        print("STEP 1: File received")
-
-
-        # Create image filename
+        print("STEP 1 : File received")
 
         filename = f"{uuid.uuid4()}.jpg"
-
 
         image_path = os.path.join(
             UPLOAD_FOLDER,
             filename
         )
 
-
-        # Save image
-
         with open(image_path, "wb") as buffer:
-
             shutil.copyfileobj(
                 file.file,
                 buffer
             )
 
+        print("STEP 2 : Image saved")
 
-        print(
-            "STEP 2: Image saved:",
-            image_path
-        )
+        image = cv2.imread(image_path)
 
+        if image is None:
+            raise Exception("Unable to read uploaded image")
 
+        print("STEP 3 : Starting YOLO")
 
-        # ---------------------------------
-        # YOLO Prediction
-        # ---------------------------------
-
-        print("STEP 3: Starting YOLO")
-
-
-        results = model.predict(
-            source=image_path,
+        results = model(
+            image,
             conf=0.25,
-            imgsz=640,
-            save=False
+            imgsz=320,
+            verbose=False
         )
 
-
-        print("STEP 4: YOLO completed")
-
-
+        print("STEP 4 : YOLO completed")
 
         detected = False
 
-
-
         for result in results:
 
-
-            print(
-                "Detected boxes:",
-                len(result.boxes)
-            )
-
-
             if len(result.boxes) > 0:
-
                 detected = True
 
-
-
-            # Draw bounding boxes
-
-            annotated_image = result.plot()
-
+            annotated = result.plot()
 
             cv2.imwrite(
                 image_path,
-                annotated_image
+                annotated
             )
 
-
-
-        if detected:
-
-            status = "RPW Detected"
-
-        else:
-
-            status = "No RPW"
-
-
-
-        print(
-            "Detection Status:",
-            status
-        )
-
-
-
-        # ---------------------------------
-        # Image URL
-        # ---------------------------------
+        status = "RPW Detected" if detected else "No RPW"
 
         image_url = (
             "https://rpw-ai.onrender.com/uploads/"
             + filename
         )
 
+        print("STEP 5 : Saving Firestore")
 
+        if db is not None:
 
-        # ---------------------------------
-        # Save Firestore
-        # ---------------------------------
+            db.collection("detections").add({
 
-        print("STEP 5: Saving Firebase")
+                "filename": filename,
 
+                "status": status,
 
-        if db:
+                "imageUrl": image_url,
 
+                "timestamp": firestore.SERVER_TIMESTAMP
 
-            db.collection(
-                "detections"
-            ).add(
-                {
+            })
 
-                    "filename": filename,
+            print("Firestore saved")
 
-                    "status": status,
-
-                    "imageUrl": image_url,
-
-                    "timestamp": firestore.SERVER_TIMESTAMP
-
-                }
-            )
-
-
-            print(
-                "Firestore saved successfully"
-            )
-
-
-
-        print(
-            "STEP 6: Sending response"
-        )
-
-
+        print("STEP 6 : Sending Response")
 
         return {
-
 
             "success": True,
 
@@ -260,48 +153,30 @@ async def predict(
 
             "imageUrl": image_url
 
-
         }
-
-
 
     except Exception as e:
 
-
-        print(
-            "ERROR OCCURRED:",
-            repr(e)
-        )
-
+        print("ERROR:", repr(e))
 
         return {
 
-
             "success": False,
 
-            "error": repr(e)
-
+            "error": str(e)
 
         }
 
-
-
-# ---------------------------------
-# Run Local
-# ---------------------------------
-
+# -----------------------------
+# Local Run
+# -----------------------------
 if __name__ == "__main__":
-
 
     import uvicorn
 
-
     uvicorn.run(
-
-        app,
-
+        "app:app",
         host="0.0.0.0",
-
-        port=10000
-
+        port=10000,
+        reload=False
     )
