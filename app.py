@@ -1,5 +1,4 @@
 from fastapi import FastAPI, UploadFile, File
-from fastapi.staticfiles import StaticFiles
 from ultralytics import YOLO
 import firebase_admin
 from firebase_admin import credentials, firestore
@@ -8,6 +7,8 @@ import os
 import uuid
 import cv2
 import traceback
+import cloudinary
+import cloudinary.uploader
 
 # ---------------------------------
 # FastAPI
@@ -17,6 +18,16 @@ app = FastAPI(
     title="RPW AI Detection API",
     description="Red Palm Weevil Detection System",
     version="1.0"
+)
+
+# ---------------------------------
+# Cloudinary
+# ---------------------------------
+
+cloudinary.config(
+    cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
+    api_key=os.getenv("CLOUDINARY_API_KEY"),
+    api_secret=os.getenv("CLOUDINARY_API_SECRET")
 )
 
 # ---------------------------------
@@ -54,14 +65,7 @@ print("YOLO model loaded successfully!")
 # ---------------------------------
 
 UPLOAD_FOLDER = "uploads"
-
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-
-app.mount(
-    "/uploads",
-    StaticFiles(directory=UPLOAD_FOLDER),
-    name="uploads"
-)
 
 # ---------------------------------
 # Home
@@ -94,11 +98,7 @@ async def predict(file: UploadFile = File(...)):
         )
 
         with open(image_path, "wb") as buffer:
-
-            shutil.copyfileobj(
-                file.file,
-                buffer
-            )
+            shutil.copyfileobj(file.file, buffer)
 
         print("STEP 2 : Image Saved")
 
@@ -137,15 +137,19 @@ async def predict(file: UploadFile = File(...)):
 
         status = "RPW Detected" if detected else "No RPW"
 
-        image_url = (
-            "https://rpw-ai.onrender.com/uploads/"
-            + filename
+        print("Uploading image to Cloudinary...")
+
+        upload_result = cloudinary.uploader.upload(
+            image_path,
+            folder="rpw-detections"
         )
 
-        print(status)
+        image_url = upload_result["secure_url"]
+
+        print("Cloudinary Upload Successful")
 
         # ---------------------------------
-        # Save to Firestore
+        # Save Firestore
         # ---------------------------------
 
         if db:
@@ -169,6 +173,10 @@ async def predict(file: UploadFile = File(...)):
             })
 
             print("Firestore Saved Successfully")
+
+        # Delete temporary file
+        if os.path.exists(image_path):
+            os.remove(image_path)
 
         print("Response Sent")
 
