@@ -10,9 +10,10 @@ import traceback
 import cloudinary
 import cloudinary.uploader
 
-# ---------------------------------
-# FastAPI
-# ---------------------------------
+
+# =========================================
+# FASTAPI
+# =========================================
 
 app = FastAPI(
     title="RPW AI Detection API",
@@ -20,9 +21,10 @@ app = FastAPI(
     version="1.0"
 )
 
-# ---------------------------------
-# Cloudinary
-# ---------------------------------
+
+# =========================================
+# CLOUDINARY
+# =========================================
 
 cloudinary.config(
     cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
@@ -30,14 +32,18 @@ cloudinary.config(
     api_secret=os.getenv("CLOUDINARY_API_SECRET")
 )
 
-# ---------------------------------
-# Firebase
-# ---------------------------------
+
+# =========================================
+# FIREBASE
+# =========================================
 
 db = None
 
 try:
-    cred = credentials.Certificate("/etc/secrets/serviceAccountKey.json")
+
+    cred = credentials.Certificate(
+        "/etc/secrets/serviceAccountKey.json"
+    )
 
     firebase_admin.initialize_app(cred)
 
@@ -50,9 +56,10 @@ except Exception as e:
     print("Firebase initialization failed")
     print(e)
 
-# ---------------------------------
-# Load YOLO Model
-# ---------------------------------
+
+# =========================================
+# LOAD YOLO MODEL
+# =========================================
 
 print("Loading YOLO model...")
 
@@ -60,16 +67,22 @@ model = YOLO("best.pt")
 
 print("YOLO model loaded successfully!")
 
-# ---------------------------------
-# Upload Folder
-# ---------------------------------
+
+# =========================================
+# TEMPORARY UPLOAD FOLDER
+# =========================================
 
 UPLOAD_FOLDER = "uploads"
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# ---------------------------------
-# Home
-# ---------------------------------
+os.makedirs(
+    UPLOAD_FOLDER,
+    exist_ok=True
+)
+
+
+# =========================================
+# HOME
+# =========================================
 
 @app.get("/")
 def home():
@@ -79,16 +92,29 @@ def home():
         "status": "online"
     }
 
-# ---------------------------------
-# Predict
-# ---------------------------------
+
+# =========================================
+# PREDICT
+# =========================================
 
 @app.post("/predict")
-async def predict(file: UploadFile = File(...)):
+async def predict(
+    file: UploadFile = File(...)
+):
+
+    image_path = None
 
     try:
 
+        print("")
+        print("==============================")
         print("STEP 1 : File Received")
+        print("==============================")
+
+
+        # ---------------------------------
+        # Create temporary filename
+        # ---------------------------------
 
         filename = f"{uuid.uuid4()}.jpg"
 
@@ -97,64 +123,188 @@ async def predict(file: UploadFile = File(...)):
             filename
         )
 
-        with open(image_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
 
-        print("STEP 2 : Image Saved")
+        # ---------------------------------
+        # Save temporarily
+        # ---------------------------------
 
-        print("STEP 3 : Running YOLO")
+        with open(
+            image_path,
+            "wb"
+        ) as buffer:
+
+            shutil.copyfileobj(
+                file.file,
+                buffer
+            )
+
+
+        print("STEP 2 : Temporary image saved")
+
+
+        # ---------------------------------
+        # YOLO DETECTION
+        # ---------------------------------
+
+        print("STEP 3 : Running YOLO...")
 
         results = model.predict(
+
             source=image_path,
+
+            # Lower resolution = faster
+            imgsz=320,
+
+            # Detection confidence
             conf=0.25,
-            imgsz=640,
+
             save=False,
+
             verbose=False
+
         )
 
-        print("STEP 4 : YOLO Finished")
+
+        print("STEP 4 : YOLO finished")
+
+
+        # ---------------------------------
+        # CHECK DETECTION
+        # ---------------------------------
 
         detected = False
+
         confidence = 0
+
+        detected_result = None
+
 
         for result in results:
 
-            if len(result.boxes) > 0:
+            if (
+                result.boxes is not None
+                and len(result.boxes) > 0
+            ):
 
                 detected = True
 
                 confidence = round(
-                    float(result.boxes.conf.max()) * 100,
+                    float(
+                        result.boxes.conf.max()
+                    ) * 100,
                     2
                 )
 
-            annotated = result.plot()
+                detected_result = result
 
-            cv2.imwrite(
-                image_path,
-                annotated
-            )
+                break
 
-        status = "RPW Detected" if detected else "No RPW"
 
-        print("Uploading image to Cloudinary...")
+        # =================================
+        # NO RPW
+        # =================================
 
-        upload_result = cloudinary.uploader.upload(
+        if not detected:
+
+            print("")
+            print("NO RPW DETECTED")
+            print("Image will NOT be uploaded")
+            print("Image will NOT be saved")
+            print("")
+
+            # Delete temporary image
+
+            if (
+                image_path
+                and os.path.exists(image_path)
+            ):
+
+                os.remove(image_path)
+
+
+            return {
+
+                "success": True,
+
+                "status": "No RPW",
+
+                "confidence": 0,
+
+                "imageUrl": None
+
+            }
+
+
+        # =================================
+        # RPW DETECTED
+        # =================================
+
+        print("")
+        print("******************************")
+        print("RPW DETECTED!")
+        print("Confidence:",
+              confidence,
+              "%")
+        print("******************************")
+
+
+        status = "RPW Detected"
+
+
+        # ---------------------------------
+        # Draw bounding box
+        # ---------------------------------
+
+        annotated_image = detected_result.plot()
+
+
+        # ---------------------------------
+        # Save annotated image temporarily
+        # ---------------------------------
+
+        cv2.imwrite(
             image_path,
-            folder="rpw-detections"
+            annotated_image
         )
 
-        image_url = upload_result["secure_url"]
 
-        print("Cloudinary Upload Successful")
+        # =================================
+        # CLOUDINARY
+        # =================================
 
-        # ---------------------------------
-        # Save Firestore
-        # ---------------------------------
+        print(
+            "Uploading detected image to Cloudinary..."
+        )
+
+
+        upload_result = cloudinary.uploader.upload(
+
+            image_path,
+
+            folder="rpw-detections"
+
+        )
+
+
+        image_url = upload_result[
+            "secure_url"
+        ]
+
+
+        print(
+            "Cloudinary upload successful!"
+        )
+
+
+        # =================================
+        # FIRESTORE
+        # =================================
 
         if db:
 
-            db.collection("traps").add({
+            db.collection(
+                "traps"
+            ).add({
 
                 "trapId": "TRAP001",
 
@@ -168,23 +318,42 @@ async def predict(file: UploadFile = File(...)):
 
                 "active": True,
 
-                "timestamp": firestore.SERVER_TIMESTAMP
+                "timestamp":
+                    firestore.SERVER_TIMESTAMP
 
             })
 
-            print("Firestore Saved Successfully")
 
-        # Delete temporary file
-        if os.path.exists(image_path):
+            print(
+                "Firestore detection saved!"
+            )
+
+
+        # =================================
+        # DELETE TEMPORARY IMAGE
+        # =================================
+
+        if (
+            image_path
+            and os.path.exists(image_path)
+        ):
+
             os.remove(image_path)
 
-        print("Response Sent")
+
+        # =================================
+        # RESPONSE
+        # =================================
+
+        print(
+            "Detection response sent!"
+        )
 
         return {
 
             "success": True,
 
-            "status": status,
+            "status": "RPW Detected",
 
             "confidence": confidence,
 
@@ -192,29 +361,58 @@ async def predict(file: UploadFile = File(...)):
 
         }
 
-    except Exception:
 
-        print(traceback.format_exc())
+    except Exception as e:
+
+        print("")
+        print("==============================")
+        print("ERROR")
+        print("==============================")
+
+        print(
+            traceback.format_exc()
+        )
+
+
+        # ---------------------------------
+        # Delete temporary file
+        # ---------------------------------
+
+        if (
+            image_path
+            and os.path.exists(image_path)
+        ):
+
+            os.remove(image_path)
+
 
         return {
 
             "success": False,
 
-            "error": traceback.format_exc()
+            "status": "Error",
+
+            "error": str(e)
 
         }
 
-# ---------------------------------
-# Local Run
-# ---------------------------------
+
+# =========================================
+# LOCAL RUN
+# =========================================
 
 if __name__ == "__main__":
 
     import uvicorn
 
     uvicorn.run(
+
         "app:app",
+
         host="0.0.0.0",
+
         port=10000,
+
         reload=False
+
     )
