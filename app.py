@@ -1,39 +1,32 @@
 from fastapi import FastAPI, UploadFile, File
 from ultralytics import YOLO
-
 import firebase_admin
 from firebase_admin import credentials, firestore
-
-import cloudinary
-import cloudinary.uploader
-
 import shutil
 import os
 import uuid
 import cv2
 import traceback
+import cloudinary
+import cloudinary.uploader
 
-
-# ==========================================
+# =========================================================
 # FASTAPI
-# ==========================================
+# =========================================================
 
 app = FastAPI(
     title="RPW AI Detection API",
     description="Red Palm Weevil Detection System",
-    version="1.0"
+    version="2.0"
 )
 
-
-# ==========================================
+# =========================================================
 # SETTINGS
-# ==========================================
+# =========================================================
 
-# YOLO confidence threshold
-# Start with 0.55
-# If real RPW is missed, try 0.45
-# If false detections continue, try 0.60
-YOLO_CONFIDENCE = 0.55
+# IMPORTANT:
+# Increase this to reduce false detections.
+YOLO_CONFIDENCE = 0.70
 
 YOLO_IMAGE_SIZE = 640
 
@@ -41,10 +34,11 @@ TRAP_ID = "TRAP001"
 
 LOCATION = "Palm Plantation"
 
+MODEL_VERSION = "RPW_MODEL_2.0_CONF_70"
 
-# ==========================================
+# =========================================================
 # CLOUDINARY
-# ==========================================
+# =========================================================
 
 cloudinary.config(
     cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
@@ -52,10 +46,9 @@ cloudinary.config(
     api_secret=os.getenv("CLOUDINARY_API_SECRET")
 )
 
-
-# ==========================================
+# =========================================================
 # FIREBASE
-# ==========================================
+# =========================================================
 
 db = None
 
@@ -69,37 +62,36 @@ try:
 
     db = firestore.client()
 
-    print("===================================")
-    print("Firebase connected successfully!")
-    print("===================================")
+    print("====================================")
+    print("Firebase connected successfully")
+    print("====================================")
 
 except Exception as e:
 
     print("Firebase initialization failed")
     print(e)
 
-
-# ==========================================
+# =========================================================
 # LOAD YOLO MODEL
-# ==========================================
+# =========================================================
 
-print("===================================")
+print("====================================")
 print("Loading YOLO model...")
-print("===================================")
+print("====================================")
 
 model = YOLO("best.pt")
 
-print("YOLO model loaded successfully!")
+print("YOLO model loaded successfully")
 
-print(
-    "YOLO confidence threshold:",
-    YOLO_CONFIDENCE
-)
+print("Model classes:")
+print(model.names)
 
+print("Confidence threshold:")
+print(YOLO_CONFIDENCE)
 
-# ==========================================
+# =========================================================
 # TEMPORARY FOLDER
-# ==========================================
+# =========================================================
 
 UPLOAD_FOLDER = "uploads"
 
@@ -108,31 +100,25 @@ os.makedirs(
     exist_ok=True
 )
 
-
-# ==========================================
+# =========================================================
 # HOME
-# ==========================================
+# =========================================================
 
 @app.get("/")
 def home():
 
     return {
-
-        "message":
-            "RPW AI Server Running Successfully",
-
-        "status":
-            "online",
-
-        "detection_confidence":
-            YOLO_CONFIDENCE
-
+        "message": "RPW AI Server Running Successfully",
+        "status": "online",
+        "model_version": MODEL_VERSION,
+        "confidence_threshold": YOLO_CONFIDENCE,
+        "model_classes": model.names
     }
 
 
-# ==========================================
+# =========================================================
 # PREDICT
-# ==========================================
+# =========================================================
 
 @app.post("/predict")
 async def predict(
@@ -144,85 +130,74 @@ async def predict(
     try:
 
         print()
-        print("===================================")
+        print("====================================")
         print("NEW IMAGE RECEIVED")
-        print("===================================")
+        print("====================================")
 
-
-        # ==================================
+        # =================================================
         # SAVE TEMPORARY IMAGE
-        # ==================================
+        # =================================================
 
-        filename = (
-            str(uuid.uuid4())
-            + ".jpg"
-        )
+        filename = str(uuid.uuid4()) + ".jpg"
 
         image_path = os.path.join(
             UPLOAD_FOLDER,
             filename
         )
 
-        with open(
-            image_path,
-            "wb"
-        ) as buffer:
+        with open(image_path, "wb") as buffer:
 
             shutil.copyfileobj(
                 file.file,
                 buffer
             )
 
-        print(
-            "Temporary image:",
-            image_path
-        )
+        print("Temporary image saved:")
+        print(image_path)
 
-
-        # ==================================
+        # =================================================
         # CHECK IMAGE
-        # ==================================
+        # =================================================
 
-        image = cv2.imread(
-            image_path
-        )
+        image = cv2.imread(image_path)
 
         if image is None:
 
-            print(
-                "ERROR: Invalid image"
-            )
+            print("Invalid image")
 
-            if os.path.exists(
-                image_path
-            ):
-                os.remove(
-                    image_path
-                )
+            if os.path.exists(image_path):
+                os.remove(image_path)
 
             return {
-
                 "success": False,
-
                 "detected": False,
-
-                "status": "Invalid image"
-
+                "status": "Invalid image",
+                "confidence": 0,
+                "imageUrl": None
             }
 
+        height, width = image.shape[:2]
 
-        # ==================================
-        # YOLO DETECTION
-        # ==================================
-
-        print()
         print(
-            "Running YOLO..."
+            "Image size:",
+            width,
+            "x",
+            height
         )
 
+        # =================================================
+        # YOLO DETECTION
+        # =================================================
+
+        print()
+        print("Running YOLO...")
         print(
             "Confidence threshold:",
             YOLO_CONFIDENCE
+        )
+        print(
+            "Image size:",
+            YOLO_IMAGE_SIZE
         )
 
         results = model.predict(
@@ -235,117 +210,127 @@ async def predict(
 
             save=False,
 
-            verbose=False
+            verbose=False,
 
+            # Don't merge different classes
+            agnostic_nms=False,
+
+            # Limit number of detections
+            max_det=10
         )
 
+        print("YOLO finished")
 
-        print(
-            "YOLO finished"
-        )
-
-
-        # ==================================
-        # FIND BEST DETECTION
-        # ==================================
-
-        detected = False
-
-        best_confidence = 0
+        # =================================================
+        # FIND BEST VALID RPW DETECTION
+        # =================================================
 
         best_result = None
 
+        best_confidence = 0.0
+
+        best_class_id = None
+
+        detection_count = 0
 
         for result in results:
 
-            if (
-                result.boxes is not None
-                and len(result.boxes) > 0
-            ):
+            if result.boxes is None:
+                continue
 
-                current_confidence = float(
-                    result.boxes.conf.max()
+            for i in range(len(result.boxes)):
+
+                confidence = float(
+                    result.boxes.conf[i]
+                )
+
+                class_id = int(
+                    result.boxes.cls[i]
+                )
+
+                class_name = model.names.get(
+                    class_id,
+                    str(class_id)
                 )
 
                 print(
-                    "YOLO detection:",
+                    "Detection:",
+                    class_name,
+                    "confidence:",
                     round(
-                        current_confidence * 100,
+                        confidence * 100,
                         2
                     ),
                     "%"
                 )
 
+                # =================================================
+                # ONLY ACCEPT RPW CLASS
+                # =================================================
 
-                if (
-                    current_confidence
-                    > best_confidence
-                ):
+                if class_name.lower() not in [
+                    "rpw",
+                    "red palm weevil",
+                    "red_palm_weevil",
+                    "redpalmweevil"
+                ]:
 
-                    best_confidence = (
-                        current_confidence
+                    print(
+                        "Rejected class:",
+                        class_name
                     )
+
+                    continue
+
+                # =================================================
+                # CONFIDENCE CHECK
+                # =================================================
+
+                if confidence < YOLO_CONFIDENCE:
+
+                    print(
+                        "Rejected low confidence:",
+                        round(
+                            confidence * 100,
+                            2
+                        ),
+                        "%"
+                    )
+
+                    continue
+
+                # =================================================
+                # KEEP BEST DETECTION
+                # =================================================
+
+                if confidence > best_confidence:
+
+                    best_confidence = confidence
 
                     best_result = result
 
+                    best_class_id = class_id
 
-        # ==================================
-        # FINAL CONFIDENCE CHECK
-        # ==================================
+                    detection_count += 1
 
-        if (
-            best_result is not None
-            and best_confidence
-            >= YOLO_CONFIDENCE
-        ):
+        # =================================================
+        # NO VALID RPW
+        # =================================================
 
-            detected = True
-
-
-        # ==================================
-        # NO RPW
-        # ==================================
-
-        if not detected:
+        if best_result is None:
 
             print()
-            print("-----------------------------------")
-            print("NO RPW")
-            print("-----------------------------------")
+            print("------------------------------------")
+            print("NO VALID RPW DETECTED")
+            print("------------------------------------")
 
             print(
-                "Image will NOT be uploaded"
+                "Temporary image will be deleted"
             )
 
-            print(
-                "Image will NOT be stored"
-            )
+            if os.path.exists(image_path):
 
-            print(
-                "Firestore record will NOT be created"
-            )
-
-
-            # --------------------------------
-            # DELETE TEMP IMAGE
-            # --------------------------------
-
-            if os.path.exists(
-                image_path
-            ):
-
-                os.remove(
-                    image_path
-                )
-
-                print(
-                    "Temporary image deleted"
-                )
-
-
-            # --------------------------------
-            # RETURN ONLY RESULT
-            # --------------------------------
+                os.remove(image_path)
 
             return {
 
@@ -357,95 +342,86 @@ async def predict(
 
                 "confidence": 0,
 
-                "imageUrl": None
+                "imageUrl": None,
+
+                "model_version": MODEL_VERSION,
+
+                "threshold": YOLO_CONFIDENCE
 
             }
 
-
-        # ==================================
+        # =================================================
         # RPW DETECTED
-        # ==================================
+        # =================================================
 
-        confidence = round(
-
+        confidence_percent = round(
             best_confidence * 100,
-
             2
-
         )
 
-
         print()
-        print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+        print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
         print("       RPW DETECTED")
-        print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+        print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
 
         print(
             "Confidence:",
-            confidence,
+            confidence_percent,
             "%"
         )
 
-
-        # ==================================
-        # CREATE ANNOTATED IMAGE
-        # ==================================
-
         print(
-            "Creating detection image..."
-        )
-
-        annotated_image = (
-            best_result.plot()
-        )
-
-        cv2.imwrite(
-
-            image_path,
-
-            annotated_image
-
-        )
-
-
-        # ==================================
-        # CLOUDINARY
-        # ==================================
-
-        print()
-        print(
-            "Uploading RPW image..."
-        )
-
-        upload_result = (
-            cloudinary.uploader.upload(
-
-                image_path,
-
-                folder="rpw-detections"
-
+            "Class:",
+            model.names.get(
+                best_class_id,
+                str(best_class_id)
             )
         )
 
+        # =================================================
+        # CREATE ANNOTATED IMAGE
+        # =================================================
 
-        image_url = (
-            upload_result["secure_url"]
+        annotated_image = best_result.plot()
+
+        cv2.imwrite(
+            image_path,
+            annotated_image
         )
 
+        print(
+            "Detection image created"
+        )
+
+        # =================================================
+        # UPLOAD ONLY RPW IMAGE
+        # =================================================
+
+        print()
+        print(
+            "Uploading RPW detection image..."
+        )
+
+        upload_result = cloudinary.uploader.upload(
+
+            image_path,
+
+            folder="rpw-detections",
+
+            resource_type="image"
+        )
+
+        image_url = upload_result[
+            "secure_url"
+        ]
 
         print(
             "Cloudinary upload successful"
         )
 
-        print(
-            "Image URL:",
-            image_url
-        )
-
-
-        # ==================================
+        # =================================================
         # FIRESTORE
-        # ==================================
+        # =================================================
 
         if db is not None:
 
@@ -454,22 +430,18 @@ async def predict(
                 "Saving RPW detection to Firestore..."
             )
 
-
             db.collection(
                 "traps"
             ).add({
 
-                "trapId":
-                    TRAP_ID,
+                "trapId": TRAP_ID,
 
-                "status":
-                    "RPW Detected",
+                "status": "RPW Detected",
 
-                "detected":
-                    True,
+                "detected": True,
 
                 "confidence":
-                    confidence,
+                    confidence_percent,
 
                 "imageUrl":
                     image_url,
@@ -477,56 +449,38 @@ async def predict(
                 "location":
                     LOCATION,
 
-                "active":
-                    True,
+                "active": True,
+
+                "modelVersion":
+                    MODEL_VERSION,
+
+                "threshold":
+                    YOLO_CONFIDENCE,
 
                 "timestamp":
                     firestore.SERVER_TIMESTAMP
 
             })
 
-
             print(
                 "Firestore record saved"
             )
 
-        else:
-
-            print(
-                "Firestore unavailable"
-            )
-
-
-        # ==================================
+        # =================================================
         # DELETE TEMPORARY FILE
-        # ==================================
+        # =================================================
 
-        if os.path.exists(
-            image_path
-        ):
+        if os.path.exists(image_path):
 
-            os.remove(
-                image_path
-            )
+            os.remove(image_path)
 
             print(
-                "Temporary file deleted"
+                "Temporary image deleted"
             )
 
-
-        # ==================================
+        # =================================================
         # RESPONSE
-        # ==================================
-
-        print()
-        print(
-            "RPW detection response sent"
-        )
-
-        print(
-            "==================================="
-        )
-
+        # =================================================
 
         return {
 
@@ -538,41 +492,33 @@ async def predict(
                 "RPW Detected",
 
             "confidence":
-                confidence,
+                confidence_percent,
 
             "imageUrl":
-                image_url
+                image_url,
+
+            "model_version":
+                MODEL_VERSION,
+
+            "threshold":
+                YOLO_CONFIDENCE
 
         }
 
-
-    # ======================================
+    # =====================================================
     # ERROR
-    # ======================================
+    # =====================================================
 
     except Exception as e:
 
         print()
-        print(
-            "!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
-        )
-
-        print(
-            "SERVER ERROR"
-        )
+        print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+        print("SERVER ERROR")
+        print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
 
         print(
             traceback.format_exc()
         )
-
-        print(
-            "!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
-        )
-
-
-        # ----------------------------------
-        # DELETE TEMP IMAGE
-        # ----------------------------------
 
         if image_path:
 
@@ -583,7 +529,6 @@ async def predict(
                 os.remove(
                     image_path
                 )
-
 
         return {
 
@@ -604,9 +549,9 @@ async def predict(
         }
 
 
-# ==========================================
+# =========================================================
 # LOCAL RUN
-# ==========================================
+# =========================================================
 
 if __name__ == "__main__":
 
@@ -621,5 +566,4 @@ if __name__ == "__main__":
         port=10000,
 
         reload=False
-
     )
